@@ -1,0 +1,23 @@
+{
+  "name": "@memento/worker",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm --filter @memento/shared build && pnpm --filter @memento/core build && pnpm --filter @memento/clients build && vitest run",
+    "lint": "node -e \"console.log('lint: skipped')\""
+  },
+  "dependencies": {
+    "@memento/clients": "workspace:*",
+    "@memento/core": "workspace:*",
+    "@memento/shared": "workspace:*",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
+  }
+}
