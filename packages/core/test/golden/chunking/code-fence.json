@@ -1,0 +1,69 @@
+{
+  "fixture": "code-fence.md",
+  "config": {
+    "targetTokens": 40,
+    "maxTokens": 80,
+    "overlapTokens": 0
+  },
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "heading_path": [
+        "SDK"
+      ],
+      "section_anchor": "h1:sdk",
+      "start_char": 0,
+      "end_char": 7,
+      "sha256": "7da99056962acdf5924fa4541d133841692b03eef7d4d1717cc84abd0d55ac60",
+      "excerpt": "# SDK"
+    },
+    {
+      "chunk_index": 1,
+      "heading_path": [
+        "SDK",
+        "Example"
+      ],
+      "section_anchor": "h2:sdk.example",
+      "start_char": 7,
+      "end_char": 90,
+      "sha256": "2d201c3db369e5c76bf94fffa6abab99c9623960ac6585119b5faa2e932643c5",
+      "excerpt": "## Example Below is a stable code block that should never be split across chunks"
+    },
+    {
+      "chunk_index": 2,
+      "heading_path": [
+        "SDK",
+        "Example"
+      ],
+      "section_anchor": "h2:sdk.example",
+      "start_char": 90,
+      "end_char": 295,
+      "sha256": "6bf5adb75c226e2a8140754aaebe423997b47f4ff605adc1e782c88e6c4747e0",
+      "excerpt": "```ts import { createClient } from \"@memento/sdk\"; const client = createClient({"
+    },
+    {
+      "chunk_index": 3,
+      "heading_path": [
+        "SDK",
+        "Example"
+      ],
+      "section_anchor": "h2:sdk.example",
+      "start_char": 295,
+      "end_char": 364,
+      "sha256": "b143f9d1be58a740297498bc69f3407f5335b58028fc8bb05cb09e54d596c94b",
+      "excerpt": "The paragraph after the code fence should remain with the section."
+    },
+    {
+      "chunk_index": 4,
+      "heading_path": [
+        "SDK",
+        "Notes"
+      ],
+      "section_anchor": "h2:sdk.notes",
+      "start_char": 364,
+      "end_char": 424,
+      "sha256": "dd4e63d8131d9b4b654131c247f647299a56260bc0f6d87bf1f28b359a320c8b",
+      "excerpt": "## Notes Use short-lived tokens for local development only."
+    }
+  ]
+}

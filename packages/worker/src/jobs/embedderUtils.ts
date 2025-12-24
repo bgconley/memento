@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   FakeEmbedder,
   JinaEmbedder,
@@ -32,6 +32,8 @@ export type Batch = {
   index: number;
   chunks: ChunkRow[];
 };
+
+type Queryable = Pick<PoolClient, "query"> | Pick<Pool, "query">;
 
 function readBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
@@ -88,7 +90,14 @@ export function createEmbedder(profile: EmbeddingProfileRow): Embedder {
   }
 
   if (profile.provider === "jina") {
-    return new JinaEmbedder({ baseUrl, apiKey, model: profile.model, dims: profile.dims });
+    const lateChunking = readBoolean(config.late_chunking);
+    return new JinaEmbedder({
+      baseUrl,
+      apiKey,
+      model: profile.model,
+      dims: profile.dims,
+      lateChunking,
+    });
   }
 
   if (profile.provider === "openai_compat") {
@@ -133,7 +142,7 @@ function toVectorLiteral(vector: number[]): string {
 }
 
 export async function loadEmbeddingProfile(
-  client: PoolClient,
+  client: Queryable,
   projectId: string,
   embeddingProfileId?: string
 ): Promise<EmbeddingProfileRow> {
@@ -165,7 +174,7 @@ export async function loadEmbeddingProfile(
 }
 
 export async function insertEmbeddings(
-  client: PoolClient,
+  client: Queryable,
   profileId: string,
   chunks: ChunkRow[],
   vectors: number[][]

@@ -1,0 +1,8 @@
+{
+  "goal": "Implement token refresh and troubleshoot ECONNRESET issues in dev",
+  "max_items": 12,
+  "include_canonical": true,
+  "include_latest_snapshot": true,
+  "include_recent_troubleshooting": true,
+  "include_context_pack": true
+}

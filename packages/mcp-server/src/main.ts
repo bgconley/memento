@@ -3,8 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
 import { getPool } from "@memento/core";
 import { createLogger } from "@memento/shared";
 import { registerTools } from "./registerTools";
+import { registerPrompts } from "./prompts";
 import { createHandlers } from "./handlers";
 import { createRequestContext } from "./context";
+import { registerResources } from "./resources";
 
 const logger = createLogger({ component: "mcp-server" });
 
@@ -19,6 +21,8 @@ async function main() {
   const handlers = createHandlers({ pool, context });
 
   registerTools(server, handlers);
+  registerPrompts(server);
+  registerResources(server, { pool, context });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

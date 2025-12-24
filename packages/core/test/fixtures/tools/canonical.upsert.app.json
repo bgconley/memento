@@ -1,0 +1,14 @@
+{
+  "idempotency_key": "k-0001-appspec",
+  "canonical_key": "app",
+  "doc_class": "app_spec",
+  "title": "MyApp \u2014 Application Specification",
+  "tags": [
+    "canonical",
+    "spec"
+  ],
+  "content": {
+    "format": "markdown",
+    "text": "# MyApp\n\n## Overview\nMyApp does X.\n\n## Auth\nToken refresh uses ... Common errors include ECONNRESET in dev. To troubleshoot issues, verify token rotation and retry logic.\n"
+  }
+}

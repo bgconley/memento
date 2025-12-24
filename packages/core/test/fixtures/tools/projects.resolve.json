@@ -1,0 +1,7 @@
+{
+  "workspace_name": "default",
+  "cwd": "/home/user/code/myapp",
+  "repo_url": "https://github.com/acme/myapp.git",
+  "display_name": "myapp",
+  "create_if_missing": true
+}

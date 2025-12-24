@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPool, createMemoryVersion, getOrCreateWorkspace, resolveProject, upsertMemoryItem } from "@memento/core";
 import { createJobHandlers, pollOutboxOnce } from "../src/outboxPoller";
 
@@ -32,6 +32,12 @@ describe("outbox poller", () => {
       create_if_missing: true,
     });
     projectId = project.id;
+  });
+
+  beforeEach(async () => {
+    if (projectId) {
+      await pool.query("DELETE FROM outbox_events WHERE project_id = $1", [projectId]);
+    }
   });
 
   afterAll(async () => {
@@ -70,11 +76,11 @@ describe("outbox poller", () => {
     );
 
     const handlers = createJobHandlers();
-    const first = await pollOutboxOnce(pool, handlers, { batchSize: 5 });
+    const first = await pollOutboxOnce(pool, handlers, { batchSize: 5, projectId });
     expect(first.processed).toBe(1);
     expect(first.errors).toBe(0);
 
-    const second = await pollOutboxOnce(pool, handlers, { batchSize: 5 });
+    const second = await pollOutboxOnce(pool, handlers, { batchSize: 5, projectId });
     expect(second.processed).toBe(0);
     expect(second.errors).toBe(0);
 

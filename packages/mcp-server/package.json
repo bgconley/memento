@@ -1,0 +1,24 @@
+{
+  "name": "@memento/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm --filter @memento/shared build && pnpm --filter @memento/core build && vitest run --sequence.concurrent false --poolOptions.threads.singleThread",
+    "lint": "node -e \"console.log('lint: skipped')\""
+  },
+  "dependencies": {
+    "@memento/core": "workspace:*",
+    "@memento/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "@types/pg": "^8.11.11",
+    "pg": "^8.13.1",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
+  }
+}

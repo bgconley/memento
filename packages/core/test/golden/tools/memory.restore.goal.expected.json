@@ -1,0 +1,29 @@
+{
+  "bundle_id": "<uuid:bundle_id>",
+  "bundle_summary": "<string>",
+  "items": [
+    {
+      "item_id": "<uuid:item_id>",
+      "title": "MyApp \u2014 Application Specification",
+      "kind": "spec",
+      "canonical_key": "app",
+      "resource_uri": "memory://projects/<uuid:project_id>/items/<uuid:item_id>"
+    }
+  ],
+  "context_pack": {
+    "max_chars": 30000,
+    "sections": [
+      {
+        "item_id": "<uuid:item_id>",
+        "canonical_key": "app",
+        "section_anchor": "h2:myapp.auth",
+        "heading_path": [
+          "MyApp",
+          "Auth"
+        ],
+        "excerpt": "<string>",
+        "resource_uri": "memory://projects/<uuid:project_id>/items/<uuid:item_id>@v1#h2:myapp.auth"
+      }
+    ]
+  }
+}

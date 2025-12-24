@@ -1,0 +1,6 @@
+{
+  "item_id": "<uuid:item_id>",
+  "version_id": "<uuid:version_id>",
+  "version_num": 1,
+  "canonical_key": "app"
+}

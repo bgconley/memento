@@ -1,0 +1,7 @@
+{
+  "workspace_id": "<uuid:workspace_id>",
+  "project_id": "<uuid:project_id>",
+  "project_key": "<sha256:project_key>",
+  "display_name": "myapp",
+  "repo_url": "https://github.com/acme/myapp.git"
+}

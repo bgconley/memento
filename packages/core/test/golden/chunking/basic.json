@@ -1,0 +1,57 @@
+{
+  "fixture": "basic.md",
+  "config": {
+    "targetTokens": 40,
+    "maxTokens": 80,
+    "overlapTokens": 0
+  },
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "heading_path": [
+        "MyApp"
+      ],
+      "section_anchor": "h1:myapp",
+      "start_char": 0,
+      "end_char": 150,
+      "sha256": "017db28ade435b87d03accdc096b63c6e258c7c25c687977ce149c77c2adde56",
+      "excerpt": "# MyApp Intro paragraph for MyApp that is long enough to force chunking in tests"
+    },
+    {
+      "chunk_index": 1,
+      "heading_path": [
+        "MyApp",
+        "Overview"
+      ],
+      "section_anchor": "h2:myapp.overview",
+      "start_char": 150,
+      "end_char": 299,
+      "sha256": "ad02ddf13bb16760e56c9495397c6d95ea35e1bb39ab56640ae4a091d3c68ece",
+      "excerpt": "## Overview The overview section describes the problem domain and expected behav"
+    },
+    {
+      "chunk_index": 2,
+      "heading_path": [
+        "MyApp",
+        "Auth"
+      ],
+      "section_anchor": "h2:myapp.auth",
+      "start_char": 299,
+      "end_char": 438,
+      "sha256": "ab5ad24791bd08c0f59ca829c32b222beb386d941f8e238c875326cbfbbec3f2",
+      "excerpt": "## Auth Token refresh uses rotating refresh tokens stored in memory for tests. A"
+    },
+    {
+      "chunk_index": 3,
+      "heading_path": [
+        "MyApp",
+        "API"
+      ],
+      "section_anchor": "h2:myapp.api",
+      "start_char": 438,
+      "end_char": 499,
+      "sha256": "a687c5d5ae5dd7fb5daeae5149a90faf2b9ca53ebc11a46e1605befa2962c44d",
+      "excerpt": "## API - GET /health - POST /sessions - DELETE /sessions/:id"
+    }
+  ]
+}

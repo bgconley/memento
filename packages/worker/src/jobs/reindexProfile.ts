@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { Pool, QueryResult } from "pg";
 import type { OutboxEvent } from "../outboxPoller";
 import {
   buildBatches,
@@ -34,7 +34,7 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-export async function reindexProfile(event: OutboxEvent, client: PoolClient): Promise<void> {
+export async function reindexProfile(event: OutboxEvent, pool: Pool): Promise<void> {
   const payload = parsePayload(event.payload);
   const profileId = readString(payload.embedding_profile_id);
 
@@ -42,31 +42,37 @@ export async function reindexProfile(event: OutboxEvent, client: PoolClient): Pr
     throw new Error("REINDEX_PROFILE missing embedding_profile_id");
   }
 
-  const profile = await loadEmbeddingProfile(client, event.project_id, profileId);
+  const profile = await loadEmbeddingProfile(pool, event.project_id, profileId);
   const embedder = createEmbedder(profile);
 
   const batchSize = getEnvNumber("EMBED_BATCH_SIZE", DEFAULT_BATCH_SIZE, 1, 512);
   const concurrency = getEnvNumber("EMBED_CONCURRENCY", DEFAULT_CONCURRENCY, 1, 8);
   const pageSize = Math.max(batchSize * Math.max(concurrency, 1), batchSize);
 
+  const cutoff = new Date();
   let lastId: string | null = null;
   let processed = 0;
 
   while (true) {
-    const result = await client.query(
-      `SELECT id, chunk_text
+    const result: QueryResult<{
+      id: string;
+      chunk_text: string;
+      created_at: string;
+    }> = await pool.query(
+      `SELECT id, chunk_text, created_at
        FROM memory_chunks
        WHERE project_id = $1
-         AND ($2::uuid IS NULL OR id > $2)
+         AND created_at <= $2
+         AND ($3::uuid IS NULL OR id > $3::uuid)
        ORDER BY id ASC
-       LIMIT $3`,
-      [event.project_id, lastId, pageSize]
+       LIMIT $4`,
+      [event.project_id, cutoff, lastId, pageSize]
     );
 
     const chunks: ChunkRow[] = result.rows;
     if (chunks.length === 0) {
       if (processed === 0) {
-        await client.query(
+        await pool.query(
           "DELETE FROM chunk_embeddings WHERE project_id = $1 AND embedding_profile_id = $2",
           [event.project_id, profile.id]
         );
@@ -104,8 +110,18 @@ export async function reindexProfile(event: OutboxEvent, client: PoolClient): Pr
 
     batchResults.sort((a, b) => a.index - b.index);
 
-    for (const batch of batchResults) {
-      await insertEmbeddings(client, profile.id, batch.chunks, batch.vectors);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const batch of batchResults) {
+        await insertEmbeddings(client, profile.id, batch.chunks, batch.vectors);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
 
     processed += chunks.length;

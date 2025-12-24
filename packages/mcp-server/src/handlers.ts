@@ -1,8 +1,16 @@
 import crypto from "node:crypto";
 import type { Pool } from "pg";
-import { ToolSchemas } from "@memento/shared";
+import {
+  ContentFormatZ,
+  DocClassZ,
+  DistanceMetricZ,
+  EmbeddingProviderZ,
+  MemoryKindZ,
+  MemoryScopeZ,
+  ToolSchemas,
+} from "@memento/shared";
 import type { ToolHandlers } from "./toolHandlers";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import {
   NotFoundError,
   ValidationError,
@@ -41,6 +49,10 @@ import type { RequestContext } from "./context";
 
 const NOT_IMPLEMENTED_CODE = "not_implemented";
 
+function shouldSkipIndexBuild(): boolean {
+  return process.env.MEMENTO_SKIP_INDEX_BUILD === "1";
+}
+
 type ToolName = keyof typeof ToolSchemas;
 
 type HandlerInput<TName extends ToolName> =
@@ -69,6 +81,30 @@ function notImplementedError(toolName: string): McpError {
     ErrorCode.InternalError,
     JSON.stringify({ code: NOT_IMPLEMENTED_CODE, message: `${toolName} not implemented` })
   );
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function readHnswConfig(config: Record<string, unknown> | null | undefined): {
+  m?: number;
+  ef_construction?: number;
+} | undefined {
+  const hnsw = config?.hnsw;
+  if (!hnsw || typeof hnsw !== "object") return undefined;
+  const m = readNumber((hnsw as Record<string, unknown>).m);
+  const efConstruction = readNumber((hnsw as Record<string, unknown>).ef_construction);
+  if (!m && !efConstruction) return undefined;
+  return {
+    m: m && m > 0 ? Math.floor(m) : undefined,
+    ef_construction: efConstruction && efConstruction > 0 ? Math.floor(efConstruction) : undefined,
+  };
 }
 
 function toIsoString(value: string | Date): string {
@@ -105,6 +141,29 @@ function buildVersionUri(
     return `${base}#${sectionAnchor}`;
   }
   return base;
+}
+
+function parseMemoryKind(kind: string) {
+  return MemoryKindZ.parse(kind);
+}
+
+function parseMemoryScope(scope: string) {
+  return MemoryScopeZ.parse(scope);
+}
+
+function normalizeDocClass(docClass: string | null) {
+  if (!docClass) return null;
+  if (docClass === "environment") return "environment_fact";
+  const parsed = DocClassZ.safeParse(docClass);
+  return parsed.success ? parsed.data : docClass;
+}
+
+function parseEmbeddingProvider(provider: string) {
+  return EmbeddingProviderZ.parse(provider);
+}
+
+function parseDistanceMetric(distance: string) {
+  return DistanceMetricZ.parse(distance);
 }
 
 function wrapTool<TName extends ToolName>(
@@ -202,7 +261,8 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { session_id: ended.session_id, ended_at: toIsoString(ended.ended_at) };
       }
 
-      if (!input.idempotency_key) {
+      const idempotencyKey = input.idempotency_key;
+      if (!idempotencyKey) {
         throw new ValidationError("idempotency_key is required when create_snapshot=true");
       }
 
@@ -227,7 +287,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         const commit = await insertOrGetCommit(client, {
           project_id: projectId,
           session_id: input.session_id,
-          idempotency_key: scopedIdempotencyKey("sessions.end", input.idempotency_key),
+          idempotency_key: scopedIdempotencyKey("sessions.end", idempotencyKey),
           author: null,
           summary: input.summary ?? null,
         });
@@ -274,13 +334,15 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           .update(snapshot.content.text)
           .digest("hex");
 
+        const contentJson =
+          "json" in snapshot.content ? snapshot.content.json ?? null : null;
         const version = await createMemoryVersion(client, {
           project_id: projectId,
           item_id: item.id,
           commit_id: commit.commit_id,
           content_format: snapshot.content.format,
           content_text: snapshot.content.text,
-          content_json: snapshot.content.json ?? null,
+          content_json: contentJson,
           checksum,
         });
 
@@ -313,10 +375,10 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         profiles: profiles.map((profile) => ({
           embedding_profile_id: profile.id,
           name: profile.name,
-          provider: profile.provider,
+          provider: parseEmbeddingProvider(profile.provider),
           model: profile.model,
           dims: profile.dims,
-          distance: profile.distance,
+          distance: parseDistanceMetric(profile.distance),
           is_active: profile.is_active,
           created_at: toIsoString(profile.created_at),
         })),
@@ -380,9 +442,12 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         });
       }
 
-      const indexResult = await ensureProfileIndex(pool, profile.id, profile.dims, profile.distance, {
-        concurrently: true,
-      });
+      const indexResult = shouldSkipIndexBuild()
+        ? { created: false }
+        : await ensureProfileIndex(pool, profile.id, profile.dims, profile.distance, {
+            concurrently: true,
+            hnsw: readHnswConfig(profile.provider_config),
+          });
 
       return {
         embedding_profile_id: profile.id,
@@ -424,9 +489,12 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         });
       }
 
-      await ensureProfileIndex(pool, profile.id, profile.dims, profile.distance, {
-        concurrently: true,
-      });
+      if (!shouldSkipIndexBuild()) {
+        await ensureProfileIndex(pool, profile.id, profile.dims, profile.distance, {
+          concurrently: true,
+          hnsw: readHnswConfig(profile.provider_config),
+        });
+      }
 
       return {
         embedding_profile_id: profile.id,
@@ -577,7 +645,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           version_id: versionRow.id,
           version_num: versionRow.version_num,
           commit_id: versionRow.commit_id,
-          content_format: versionRow.content_format,
+          content_format: ContentFormatZ.parse(versionRow.content_format),
           content_text: truncatedContent.text,
           checksum: versionRow.checksum,
           created_at: toIsoString(versionRow.created_at),
@@ -587,11 +655,11 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       return {
         item: {
           item_id: item.id,
-          kind: item.kind,
-          scope: item.scope,
+          kind: parseMemoryKind(item.kind),
+          scope: parseMemoryScope(item.scope),
           title: item.title,
           canonical_key: item.canonical_key,
-          doc_class: item.doc_class,
+          doc_class: normalizeDocClass(item.doc_class),
           pinned: item.pinned,
           status: item.status,
           tags: item.tags,
@@ -618,21 +686,24 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         },
       });
 
+      const typedResults = result.results.map((entry) => ({
+        ...entry,
+        item: {
+          ...entry.item,
+          kind: parseMemoryKind(entry.item.kind),
+          scope: parseMemoryScope(entry.item.scope),
+        },
+      }));
+
       return {
         query: result.query,
-        results: result.results,
+        results: typedResults,
         debug: input.debug ? result.debug : undefined,
       };
     }),
     memoryRestore: wrapTool("memory.restore", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
-      const items: Array<{
-        item_id: string;
-        title: string;
-        kind: string;
-        canonical_key: string | null;
-        resource_uri: string;
-      }> = [];
+      const items: HandlerOutput<"memory.restore">["items"] = [];
       const seen = new Set<string>();
 
       if (input.include_canonical) {
@@ -655,7 +726,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           items.push({
             item_id: row.id,
             title: row.title,
-            kind: row.kind,
+            kind: parseMemoryKind(row.kind),
             canonical_key: row.canonical_key,
             resource_uri: buildItemUri(projectId, row.id),
           });
@@ -680,7 +751,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           items.push({
             item_id: row.id,
             title: row.title,
-            kind: row.kind,
+            kind: parseMemoryKind(row.kind),
             canonical_key: row.canonical_key,
             resource_uri: buildItemUri(projectId, row.id),
           });
@@ -708,7 +779,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           items.push({
             item_id: row.id,
             title: row.title,
-            kind: row.kind,
+            kind: parseMemoryKind(row.kind),
             canonical_key: row.canonical_key,
             resource_uri: buildItemUri(projectId, row.id),
           });
@@ -961,11 +1032,42 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       const commitKey = scopedIdempotencyKey("canonical.upsert", input.idempotency_key);
 
       const inferKind = (docClass: string) => {
-        if (docClass.includes("plan")) return "plan";
-        if (docClass.includes("runbook")) return "runbook";
-        if (docClass.includes("troubleshooting")) return "troubleshooting";
-        if (docClass.includes("environment")) return "environment_fact";
-        return "spec";
+        switch (docClass) {
+          case "app_spec":
+          case "feature_spec":
+          case "onboarding_guide":
+          case "glossary":
+            return "spec";
+          case "design_doc":
+          case "architecture_doc":
+          case "security_review":
+          case "performance_notes":
+            return "architecture";
+          case "implementation_plan":
+          case "migration_plan":
+          case "test_plan":
+          case "rollout_plan":
+            return "plan";
+          case "adr":
+            return "decision";
+          case "code_map":
+          case "environment_registry":
+          case "environment_fact":
+            return "environment_fact";
+          case "operations_overview":
+          case "runbook":
+            return "runbook";
+          case "troubleshooting":
+          case "postmortem":
+            return "troubleshooting";
+          case "meeting_notes":
+          case "research_spike":
+          case "release_notes":
+          case "other":
+            return "note";
+          default:
+            return "note";
+        }
       };
 
       return withTransaction(pool, async (client) => {
@@ -1104,7 +1206,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
           version_id: versionRow.id,
           version_num: versionRow.version_num,
           commit_id: versionRow.commit_id,
-          content_format: versionRow.content_format,
+          content_format: ContentFormatZ.parse(versionRow.content_format),
           content_text: truncatedContent.text,
           checksum: versionRow.checksum,
           created_at: toIsoString(versionRow.created_at),
@@ -1115,11 +1217,11 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         canonical_key: input.canonical_key,
         item: {
           item_id: item.id,
-          kind: item.kind,
-          scope: item.scope,
+          kind: parseMemoryKind(item.kind),
+          scope: parseMemoryScope(item.scope),
           title: item.title,
           canonical_key: item.canonical_key,
-          doc_class: item.doc_class,
+          doc_class: normalizeDocClass(item.doc_class),
           pinned: item.pinned,
           status: item.status,
           tags: item.tags,
@@ -1183,7 +1285,15 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         throw new NotFoundError("Canonical version not found", { item_id: item.id });
       }
 
-      const chunkRows = await pool.query(
+      type SectionChunkRow = {
+        chunk_index: number;
+        chunk_text: string;
+        heading_path: string[] | null;
+        section_anchor: string | null;
+        start_char: number | null;
+        end_char: number | null;
+      };
+      const chunkRows = await pool.query<SectionChunkRow>(
         `SELECT chunk_index, chunk_text, heading_path, section_anchor, start_char, end_char
          FROM memory_chunks
          WHERE version_id = $1 AND section_anchor = $2
@@ -1307,6 +1417,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       let profileId: string | null = null;
       let profileDims: number | null = null;
       let profileDistance: string | null = null;
+      let profileConfig: Record<string, unknown> | null = null;
       let enqueued = false;
 
       await withTransaction(pool, async (client) => {
@@ -1332,6 +1443,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         profileId = profile.id;
         profileDims = profile.dims;
         profileDistance = profile.distance;
+        profileConfig = profile.provider_config ?? {};
 
         if (commit.deduped) {
           enqueued = false;
@@ -1354,9 +1466,12 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       }
 
       // Inline reindex is not executed here; the worker consumes the outbox event.
-      await ensureProfileIndex(pool, profileId, profileDims, profileDistance, {
-        concurrently: true,
-      });
+      if (!shouldSkipIndexBuild()) {
+        await ensureProfileIndex(pool, profileId, profileDims, profileDistance, {
+          concurrently: true,
+          hnsw: readHnswConfig(profileConfig),
+        });
+      }
 
       return {
         embedding_profile_id: profileId,

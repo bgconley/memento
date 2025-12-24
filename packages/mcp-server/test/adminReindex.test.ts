@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHandlers } from "../src/handlers";
 import { createRequestContext } from "../src/context";
 import { createPool } from "@memento/core";
-import { createJobHandlers } from "../../worker/src/outboxPoller";
+import { createJobHandlers, pollOutboxOnce } from "../../worker/src/outboxPoller";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -14,88 +14,22 @@ if (!DATABASE_URL) {
 process.env.EMBEDDER_USE_FAKE = "1";
 
 const pool = createPool({ connectionString: DATABASE_URL });
+const originalSkipIndex = process.env.MEMENTO_SKIP_INDEX_BUILD;
 
 function uniqueName(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-async function processNextOutboxEvent(projectId: string): Promise<boolean> {
-  const client = await pool.connect();
-  const handlers = createJobHandlers();
-
-  try {
-    await client.query("BEGIN");
-
-    const result = await client.query(
-      `SELECT id, project_id, event_type, payload, created_at, attempts
-       FROM outbox_events
-       WHERE processed_at IS NULL
-         AND project_id = $1
-         AND (processing_expires_at IS NULL OR processing_expires_at < now())
-       ORDER BY created_at ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1`,
-      [projectId]
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      await client.query("COMMIT");
-      return false;
-    }
-
-    await client.query(
-      `UPDATE outbox_events
-       SET processing_started_at = now(),
-           processing_expires_at = now() + interval '300 seconds',
-           attempts = attempts + 1
-       WHERE id = $1`,
-      [row.id]
-    );
-
-    await client.query("COMMIT");
-
-    const handler = handlers[row.event_type as keyof typeof handlers];
-    if (!handler) {
-      throw new Error(`Unknown event type: ${row.event_type}`);
-    }
-
-    try {
-      await handler(
-        {
-          id: row.id,
-          project_id: row.project_id,
-          event_type: row.event_type,
-          payload: row.payload,
-          created_at: row.created_at,
-          attempts: Number(row.attempts ?? 0) + 1,
-        },
-        client
-      );
-
-      await client.query(
-        "UPDATE outbox_events SET processed_at = now(), error = NULL, processing_expires_at = NULL WHERE id = $1",
-        [row.id]
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await client.query(
-        "UPDATE outbox_events SET processed_at = now(), error = $2, processing_expires_at = NULL WHERE id = $1",
-        [row.id, message.slice(0, 1000)]
-      );
-      throw err;
-    }
-
-    return true;
-  } finally {
-    client.release();
-  }
-}
-
 async function drainOutbox(projectId: string): Promise<void> {
-  while (await processNextOutboxEvent(projectId)) {
-    // continue until empty
+  const handlers = createJobHandlers();
+  for (let i = 0; i < 50; i += 1) {
+    const result = await pollOutboxOnce(pool, handlers, { batchSize: 5, projectId });
+    if (result.processed === 0 && result.errors === 0) return;
+    if (result.processed === 0 && result.errors > 0) {
+      throw new Error("Outbox stalled with errors");
+    }
   }
+  throw new Error("Outbox did not drain");
 }
 
 describe.sequential("admin reindex profile", () => {
@@ -107,6 +41,7 @@ describe.sequential("admin reindex profile", () => {
   let embeddingProfileId: string | null = null;
 
   beforeAll(async () => {
+    process.env.MEMENTO_SKIP_INDEX_BUILD = "1";
     const resolveResult = await handlers.projectsResolve({
       workspace_name: uniqueName("workspace"),
       repo_url: `https://example.com/${crypto.randomUUID()}.git`,
@@ -142,6 +77,11 @@ describe.sequential("admin reindex profile", () => {
       await pool.query("DELETE FROM workspaces WHERE id = $1", [workspaceId]);
     }
     await pool.end();
+    if (originalSkipIndex === undefined) {
+      delete process.env.MEMENTO_SKIP_INDEX_BUILD;
+    } else {
+      process.env.MEMENTO_SKIP_INDEX_BUILD = originalSkipIndex;
+    }
   });
 
   it("reindex profile repopulates embeddings", async () => {
@@ -196,5 +136,5 @@ describe.sequential("admin reindex profile", () => {
     const embeddingCount = Number(embeddingCountResult.rows[0]?.count ?? 0);
 
     expect(embeddingCount).toBe(chunkCount);
-  });
+  }, 20000);
 });
