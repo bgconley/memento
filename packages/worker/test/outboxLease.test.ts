@@ -1,9 +1,13 @@
 import crypto from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createPool, getOrCreateWorkspace, resolveProject } from "@memento/core";
 import {
-  claimEvents,
-  finalizeEventSuccess,
+  claimOutboxEvents,
+  createPool,
+  finalizeOutboxSuccess,
+  getOrCreateWorkspace,
+  resolveProject,
+} from "@memento/core";
+import {
   pollOutboxOnce,
   type JobHandlers,
 } from "../src/outboxPoller";
@@ -74,7 +78,7 @@ describe("outbox lease behavior", () => {
       [projectId, { version_id: crypto.randomUUID() }]
     );
 
-    const first = await claimEvents(pool, {
+    const first = await claimOutboxEvents(pool, {
       batchSize: 5,
       leaseSeconds: 60,
       maxAttempts: 5,
@@ -83,7 +87,7 @@ describe("outbox lease behavior", () => {
     });
     expect(first.map((row) => row.id)).toContain(event.rows[0].id);
 
-    const second = await claimEvents(pool, {
+    const second = await claimOutboxEvents(pool, {
       batchSize: 5,
       leaseSeconds: 60,
       maxAttempts: 5,
@@ -141,7 +145,7 @@ describe("outbox lease behavior", () => {
       [projectId, { version_id: crypto.randomUUID() }]
     );
 
-    const claimed = await claimEvents(pool, {
+    const claimed = await claimOutboxEvents(pool, {
       batchSize: 1,
       leaseSeconds: 60,
       maxAttempts: 5,
@@ -157,7 +161,7 @@ describe("outbox lease behavior", () => {
       [event.rows[0].id, "worker-b"]
     );
 
-    const updated = await finalizeEventSuccess(pool, event.rows[0].id, "worker-a");
+    const updated = await finalizeOutboxSuccess(pool, event.rows[0].id, "worker-a");
     expect(updated).toBe(false);
 
     const row = await pool.query(
@@ -191,7 +195,7 @@ describe("outbox lease behavior", () => {
     expect(Number(row.rows[0].retry_count)).toBeGreaterThanOrEqual(2);
     expect(row.rows[0].processed_at).not.toBeNull();
 
-    const reclaim = await claimEvents(pool, {
+    const reclaim = await claimOutboxEvents(pool, {
       batchSize: 5,
       leaseSeconds: 60,
       maxAttempts: 2,

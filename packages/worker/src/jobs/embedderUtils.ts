@@ -1,17 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import {
-  FakeEmbedder,
-  JinaEmbedder,
-  OpenAICompatEmbedder,
-  VoyageEmbedder,
-  type Embedder,
-} from "@memento/clients";
-
-const PROVIDER_DEFAULTS: Record<string, { baseUrl: string }> = {
-  voyage: { baseUrl: "https://api.voyageai.com" },
-  jina: { baseUrl: "https://api.jina.ai" },
-  openai_compat: { baseUrl: "http://localhost:8080/v1" },
-};
+import { createEmbedderFromProfile, type Embedder } from "@memento/clients";
 
 export type EmbeddingProfileRow = {
   id: string;
@@ -35,18 +23,6 @@ export type Batch = {
 
 type Queryable = Pick<PoolClient, "query"> | Pick<Pool, "query">;
 
-function readBoolean(value: unknown): boolean {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    return value.toLowerCase() === "true" || value === "1";
-  }
-  return false;
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
 function readNumber(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
@@ -59,52 +35,8 @@ export function getEnvNumber(name: string, fallback: number, min: number, max: n
   return Math.min(Math.max(Math.floor(value), min), max);
 }
 
-function resolveBaseUrl(provider: string, config: Record<string, unknown>): string {
-  const fromConfig = readString(config.base_url);
-  const fromEnv = readString(process.env.EMBEDDER_BASE_URL);
-  return fromConfig ?? fromEnv ?? PROVIDER_DEFAULTS[provider]?.baseUrl ?? "";
-}
-
-function resolveApiKey(config: Record<string, unknown>): string | undefined {
-  const fromEnv = readString(process.env.EMBEDDER_API_KEY);
-  const fromConfig = readString(config.api_key);
-  return fromEnv ?? fromConfig;
-}
-
 export function createEmbedder(profile: EmbeddingProfileRow): Embedder {
-  const config = profile.provider_config ?? {};
-
-  if (readBoolean(process.env.EMBEDDER_USE_FAKE) || readBoolean(config.use_fake)) {
-    return new FakeEmbedder({ dims: profile.dims, model: profile.model, provider: profile.provider });
-  }
-
-  const baseUrl = resolveBaseUrl(profile.provider, config);
-  const apiKey = resolveApiKey(config);
-
-  if (!baseUrl) {
-    throw new Error(`Embedder base_url missing for provider ${profile.provider}`);
-  }
-
-  if (profile.provider === "voyage") {
-    return new VoyageEmbedder({ baseUrl, apiKey, model: profile.model, dims: profile.dims });
-  }
-
-  if (profile.provider === "jina") {
-    const lateChunking = readBoolean(config.late_chunking);
-    return new JinaEmbedder({
-      baseUrl,
-      apiKey,
-      model: profile.model,
-      dims: profile.dims,
-      lateChunking,
-    });
-  }
-
-  if (profile.provider === "openai_compat") {
-    return new OpenAICompatEmbedder({ baseUrl, apiKey, model: profile.model, dims: profile.dims });
-  }
-
-  throw new Error(`Unsupported embedder provider: ${profile.provider}`);
+  return createEmbedderFromProfile(profile);
 }
 
 export function buildBatches(chunks: ChunkRow[], batchSize: number): Batch[] {
@@ -122,13 +54,12 @@ export async function runWithConcurrency<T>(
   limit: number
 ): Promise<T[]> {
   const results: T[] = [];
-  let cursor = 0;
+  const queue = tasks.map((_, index) => index);
 
   const workers = new Array(Math.max(limit, 1)).fill(0).map(async () => {
     while (true) {
-      const current = cursor;
-      cursor += 1;
-      if (current >= tasks.length) return;
+      const current = queue.pop();
+      if (current === undefined) return;
       results[current] = await tasks[current]();
     }
   });

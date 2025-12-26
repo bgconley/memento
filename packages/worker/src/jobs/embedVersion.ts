@@ -10,21 +10,12 @@ import {
   runWithConcurrency,
   type ChunkRow,
 } from "./embedderUtils";
+import { parsePayload, requireStringField } from "./payload";
 
 const DEFAULT_BATCH_SIZE = 32;
 const DEFAULT_CONCURRENCY = 2;
 const DEFAULT_CONTEXTUAL_MAX_CHARS = 50000;
 const DEFAULT_CONTEXTUAL_MAX_CHUNKS = 256;
-
-function parsePayload(payload: unknown): Record<string, unknown> {
-  if (typeof payload === "string") {
-    return JSON.parse(payload) as Record<string, unknown>;
-  }
-  if (payload && typeof payload === "object") {
-    return payload as Record<string, unknown>;
-  }
-  return {};
-}
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -56,11 +47,7 @@ type BatchResult = {
 export async function embedVersion(event: OutboxEvent, pool: Pool): Promise<void> {
   const logger = createLogger({ component: "worker", job: "embedVersion", event_id: event.id });
   const payload = parsePayload(event.payload);
-  const versionId = payload.version_id as string | undefined;
-
-  if (!versionId) {
-    throw new Error("EMBED_VERSION missing version_id");
-  }
+  const versionId = requireStringField(payload, "version_id", "EMBED_VERSION");
 
   const versionResult = await pool.query(
     `SELECT mv.id,
@@ -116,7 +103,16 @@ export async function embedVersion(event: OutboxEvent, pool: Pool): Promise<void
     profile.provider === "jina"
       ? readBoolean((providerConfig as Record<string, unknown>).late_chunking)
       : true;
-  let useContextual =
+  if (
+    profile.provider === "jina" &&
+    isCanonical &&
+    docClass !== null &&
+    canonicalDocClasses.has(docClass) &&
+    !contextualEnabled
+  ) {
+    logger.warn("contextual.disabled_late_chunking", { doc_class: docClass });
+  }
+  const shouldUseContextual =
     contextualEnabled &&
     isCanonical &&
     docClass !== null &&
@@ -127,7 +123,7 @@ export async function embedVersion(event: OutboxEvent, pool: Pool): Promise<void
   const concurrency = getEnvNumber("EMBED_CONCURRENCY", DEFAULT_CONCURRENCY, 1, 8);
   const batches = buildBatches(chunks, batchSize);
 
-  if (useContextual) {
+  if (shouldUseContextual) {
     const totalChars = chunks.reduce((sum, chunk) => sum + chunk.chunk_text.length, 0);
     const contextualMaxChars =
       readNumber((providerConfig as Record<string, unknown>).contextual_max_chars) ??
@@ -146,7 +142,6 @@ export async function embedVersion(event: OutboxEvent, pool: Pool): Promise<void
         max_chars: contextualMaxChars,
         max_chunks: contextualMaxChunks,
       });
-      useContextual = false;
     } else {
       try {
         const response = await embedder.embedDocumentChunksContextual?.(
@@ -184,7 +179,6 @@ export async function embedVersion(event: OutboxEvent, pool: Pool): Promise<void
         }
         const message = err instanceof Error ? err.message : String(err);
         logger.warn("contextual.fallback", { error: message });
-        useContextual = false;
       }
     }
   }

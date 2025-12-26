@@ -541,12 +541,29 @@ export const CanonicalUpsertInputZ = ProjectRefZ.extend({
   links: z.array(LinkInputZ).max(64).optional(),
 });
 
+export const CanonicalUpsertFileInputZ = ProjectRefZ.extend({
+  ...IdempotencyZ.shape,
+  canonical_key: z.string().min(1).max(400),
+  doc_class: DocClassZ,
+  title: z.string().min(1).max(300),
+  tags: TagListZ.optional(),
+  metadata: z.record(z.any()).default({}),
+  pinned: z.boolean().default(true),
+
+  path: PathZ,
+  format: ContentFormatZ.default("markdown"),
+
+  links: z.array(LinkInputZ).max(64).optional(),
+});
+
 export const CanonicalUpsertOutputZ = z.object({
   item_id: UuidZ,
   version_id: UuidZ,
   version_num: z.number().int().min(1),
   canonical_key: z.string(),
 });
+
+export const CanonicalUpsertFileOutputZ = CanonicalUpsertOutputZ;
 
 export const CanonicalGetInputZ = ProjectRefZ.extend({
   canonical_key: z.string().min(1).max(400),
@@ -682,6 +699,7 @@ export const ToolSchemas = {
   "memory.archive": { input: MemoryArchiveInputZ, output: MemoryArchiveOutputZ },
 
   "canonical.upsert": { input: CanonicalUpsertInputZ, output: CanonicalUpsertOutputZ },
+  "canonical.upsert_file": { input: CanonicalUpsertFileInputZ, output: CanonicalUpsertFileOutputZ },
   "canonical.get": { input: CanonicalGetInputZ, output: CanonicalGetOutputZ },
   "canonical.outline": { input: CanonicalOutlineInputZ, output: CanonicalOutlineOutputZ },
   "canonical.get_section": { input: CanonicalGetSectionInputZ, output: CanonicalGetSectionOutputZ },

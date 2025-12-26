@@ -1,3 +1,6 @@
+import type { ToolSchemaRegistry } from "@memento/shared";
+import type { z } from "zod";
+
 /**
  * ToolHandlers is the narrow interface expected by registerTools().
  * Each handler should:
@@ -5,35 +8,42 @@
  * - Perform a single transaction for write tools
  * - Return a JSON-serializable object matching the corresponding Output schema
  */
+type HandlerFor<TName extends keyof ToolSchemaRegistry> =
+  (input: z.input<ToolSchemaRegistry[TName]["input"]>) => Promise<{
+    content: unknown[];
+    structuredContent: z.output<ToolSchemaRegistry[TName]["output"]>;
+  }>;
+
 export type ToolHandlers = {
-  projectsResolve: (input: any) => Promise<any>;
-  projectsList: (input: any) => Promise<any>;
+  projectsResolve: HandlerFor<"projects.resolve">;
+  projectsList: HandlerFor<"projects.list">;
 
-  sessionsStart: (input: any) => Promise<any>;
-  sessionsEnd: (input: any) => Promise<any>;
+  sessionsStart: HandlerFor<"sessions.start">;
+  sessionsEnd: HandlerFor<"sessions.end">;
 
-  embeddingProfilesList: (input: any) => Promise<any>;
-  embeddingProfilesUpsert: (input: any) => Promise<any>;
-  embeddingProfilesActivate: (input: any) => Promise<any>;
+  embeddingProfilesList: HandlerFor<"embedding_profiles.list">;
+  embeddingProfilesUpsert: HandlerFor<"embedding_profiles.upsert">;
+  embeddingProfilesActivate: HandlerFor<"embedding_profiles.activate">;
 
-  memoryCommit: (input: any) => Promise<any>;
-  memoryGet: (input: any) => Promise<any>;
-  memorySearch: (input: any) => Promise<any>;
-  memoryRestore: (input: any) => Promise<any>;
-  memoryHistory: (input: any) => Promise<any>;
-  memoryDiff: (input: any) => Promise<any>;
-  memoryPin: (input: any) => Promise<any>;
-  memoryUnpin: (input: any) => Promise<any>;
-  memoryLink: (input: any) => Promise<any>;
-  memoryArchive: (input: any) => Promise<any>;
+  memoryCommit: HandlerFor<"memory.commit">;
+  memoryGet: HandlerFor<"memory.get">;
+  memorySearch: HandlerFor<"memory.search">;
+  memoryRestore: HandlerFor<"memory.restore">;
+  memoryHistory: HandlerFor<"memory.history">;
+  memoryDiff: HandlerFor<"memory.diff">;
+  memoryPin: HandlerFor<"memory.pin">;
+  memoryUnpin: HandlerFor<"memory.unpin">;
+  memoryLink: HandlerFor<"memory.link">;
+  memoryArchive: HandlerFor<"memory.archive">;
 
-  canonicalUpsert: (input: any) => Promise<any>;
-  canonicalGet: (input: any) => Promise<any>;
-  canonicalOutline: (input: any) => Promise<any>;
-  canonicalGetSection: (input: any) => Promise<any>;
-  canonicalContextPack: (input: any) => Promise<any>;
+  canonicalUpsert: HandlerFor<"canonical.upsert">;
+  canonicalUpsertFile: HandlerFor<"canonical.upsert_file">;
+  canonicalGet: HandlerFor<"canonical.get">;
+  canonicalOutline: HandlerFor<"canonical.outline">;
+  canonicalGetSection: HandlerFor<"canonical.get_section">;
+  canonicalContextPack: HandlerFor<"canonical.context_pack">;
 
-  adminReindexProfile: (input: any) => Promise<any>;
-  adminReingestVersion: (input: any) => Promise<any>;
-  healthCheck: (input: any) => Promise<any>;
+  adminReindexProfile: HandlerFor<"admin.reindex_profile">;
+  adminReingestVersion: HandlerFor<"admin.reingest_version">;
+  healthCheck: HandlerFor<"health.check">;
 };

@@ -7,6 +7,14 @@ export type Bm25Capabilities = {
 };
 
 let cached: Bm25Capabilities | null | undefined = undefined;
+let cachedAt = 0;
+
+function getCacheTtlMs(): number {
+  const raw = Number.parseInt(process.env.MEMENTO_BM25_CAPS_TTL_SECONDS ?? "", 10);
+  if (!Number.isFinite(raw)) return 300_000;
+  if (raw <= 0) return 0;
+  return raw * 1000;
+}
 
 export async function isPgSearchInstalled(pool: Pool): Promise<boolean> {
   const extension = await pool.query(
@@ -31,17 +39,28 @@ export async function hasBm25IndexOnMemoryChunks(pool: Pool): Promise<boolean> {
 }
 
 export async function getBm25Capabilities(pool: Pool): Promise<Bm25Capabilities | null> {
-  if (cached !== undefined) return cached;
+  const ttlMs = getCacheTtlMs();
+  if (cached !== undefined) {
+    if (ttlMs === 0) {
+      cached = undefined;
+    } else if (Date.now() - cachedAt < ttlMs) {
+      return cached;
+    } else {
+      cached = undefined;
+    }
+  }
 
   const installed = await isPgSearchInstalled(pool);
   if (!installed) {
     cached = null;
+    cachedAt = Date.now();
     return cached;
   }
 
   const hasIndex = await hasBm25IndexOnMemoryChunks(pool);
   if (!hasIndex) {
     cached = null;
+    cachedAt = Date.now();
     return cached;
   }
 
@@ -60,6 +79,7 @@ export async function getBm25Capabilities(pool: Pool): Promise<Bm25Capabilities 
 
   if (!operator || !scoreFunction) {
     cached = null;
+    cachedAt = Date.now();
     return cached;
   }
 
@@ -68,9 +88,11 @@ export async function getBm25Capabilities(pool: Pool): Promise<Bm25Capabilities 
     scoreFunction,
     pgSearchVersion: await getPgSearchVersion(pool),
   };
+  cachedAt = Date.now();
   return cached;
 }
 
 export function disableBm25(): void {
   cached = null;
+  cachedAt = Date.now();
 }

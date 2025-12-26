@@ -1,6 +1,6 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { getPool } from "@memento/core";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { closePool, getPool } from "@memento/core";
 import { createLogger } from "@memento/shared";
 import { registerTools } from "./registerTools";
 import { registerPrompts } from "./prompts";
@@ -28,6 +28,26 @@ async function main() {
   await server.connect(transport);
 
   logger.info("server.started", { version: "0.0.0" });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info("server.shutdown", { signal });
+    try {
+      await server.close();
+    } catch (err) {
+      logger.error("server.close_failed", { err });
+    }
+    try {
+      await closePool();
+    } catch (err) {
+      logger.error("pool.close_failed", { err });
+    }
+  };
+
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

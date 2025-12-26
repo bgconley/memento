@@ -9,6 +9,7 @@ import {
   runWithConcurrency,
   type ChunkRow,
 } from "./embedderUtils";
+import { parsePayload, requireStringField } from "./payload";
 
 const DEFAULT_BATCH_SIZE = 64;
 const DEFAULT_CONCURRENCY = 2;
@@ -20,29 +21,16 @@ type BatchResult = {
   dimensions: number;
 };
 
-function parsePayload(payload: unknown): Record<string, unknown> {
-  if (typeof payload === "string") {
-    return JSON.parse(payload) as Record<string, unknown>;
-  }
-  if (payload && typeof payload === "object") {
-    return payload as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
 export async function reindexProfile(event: OutboxEvent, pool: Pool): Promise<void> {
   const payload = parsePayload(event.payload);
-  const profileId = readString(payload.embedding_profile_id);
-
-  if (!profileId) {
-    throw new Error("REINDEX_PROFILE missing embedding_profile_id");
-  }
+  const profileId = requireStringField(payload, "embedding_profile_id", "REINDEX_PROFILE");
 
   const profile = await loadEmbeddingProfile(pool, event.project_id, profileId);
+  if (profile.project_id !== event.project_id) {
+    throw new Error(
+      `REINDEX_PROFILE project mismatch: event project ${event.project_id} vs profile ${profile.project_id}`
+    );
+  }
   const embedder = createEmbedder(profile);
 
   const batchSize = getEnvNumber("EMBED_BATCH_SIZE", DEFAULT_BATCH_SIZE, 1, 512);
@@ -66,7 +54,7 @@ export async function reindexProfile(event: OutboxEvent, pool: Pool): Promise<vo
          AND ($3::uuid IS NULL OR id > $3::uuid)
        ORDER BY id ASC
        LIMIT $4`,
-      [event.project_id, cutoff, lastId, pageSize]
+      [profile.project_id, cutoff, lastId, pageSize]
     );
 
     const chunks: ChunkRow[] = result.rows;
@@ -74,7 +62,7 @@ export async function reindexProfile(event: OutboxEvent, pool: Pool): Promise<vo
       if (processed === 0) {
         await pool.query(
           "DELETE FROM chunk_embeddings WHERE project_id = $1 AND embedding_profile_id = $2",
-          [event.project_id, profile.id]
+          [profile.project_id, profile.id]
         );
       }
       break;

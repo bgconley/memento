@@ -19,8 +19,12 @@ export async function lexicalSearch(
   if (capabilities) {
     try {
       return await lexicalBm25(pool, { ...input, capabilities });
-    } catch {
+    } catch (err) {
       disableBm25();
+      console.warn("lexical.search.bm25_failed", {
+        project_id: input.project_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return await lexicalFts(pool, input);
     }
   }

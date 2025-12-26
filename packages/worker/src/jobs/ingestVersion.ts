@@ -1,24 +1,11 @@
 import type { Pool } from "pg";
 import { chunkMarkdown, normalizeMarkdown } from "@memento/core";
 import type { OutboxEvent } from "../outboxPoller";
-
-function parsePayload(payload: unknown): Record<string, unknown> {
-  if (typeof payload === "string") {
-    return JSON.parse(payload) as Record<string, unknown>;
-  }
-  if (payload && typeof payload === "object") {
-    return payload as Record<string, unknown>;
-  }
-  return {};
-}
+import { parsePayload, requireStringField } from "./payload";
 
 export async function ingestVersion(event: OutboxEvent, pool: Pool): Promise<void> {
   const payload = parsePayload(event.payload);
-  const versionId = payload.version_id as string | undefined;
-
-  if (!versionId) {
-    throw new Error("INGEST_VERSION missing version_id");
-  }
+  const versionId = requireStringField(payload, "version_id", "INGEST_VERSION");
 
   const versionResult = await pool.query(
     `SELECT mv.id,

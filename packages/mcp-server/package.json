@@ -12,13 +12,16 @@
   "dependencies": {
     "@memento/core": "workspace:*",
     "@memento/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "diff": "^5.2.0"
   },
   "devDependencies": {
+    "@types/diff": "^5.2.0",
     "@types/node": "^20.14.15",
     "@types/pg": "^8.11.11",
     "pg": "^8.13.1",
     "typescript": "^5.5.4",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "zod": "^3.25.0"
   }
 }

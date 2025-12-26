@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { createTwoFilesPatch } from "diff";
 import type { Pool } from "pg";
 import {
   ContentFormatZ,
@@ -31,6 +34,7 @@ import {
   hybridSearch,
   insertOrGetCommit,
   listEmbeddingProfiles,
+  listProjects,
   listMemoryVersions,
   resolveProject,
   setMemoryItemPinned,
@@ -43,11 +47,48 @@ import {
   upsertMemoryItem,
   withTransaction,
   requireWorkspaceById,
+  requireWorkspaceByName,
 } from "@memento/core";
-import { resolveProjectId, setActiveProject } from "./context";
+import { resolveProjectId, runWithContext, setActiveProject } from "./context";
 import type { RequestContext } from "./context";
 
 const NOT_IMPLEMENTED_CODE = "not_implemented";
+const MAX_CONCURRENT_TOOLS = (() => {
+  const raw = Number.parseInt(process.env.MEMENTO_MAX_CONCURRENT_TOOLS ?? "", 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return Infinity;
+})();
+
+class Semaphore {
+  private readonly limit: number;
+  private active = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.active < this.limit) {
+      this.active += 1;
+      return () => this.release();
+    }
+    return new Promise((resolve) => {
+      this.queue.push(() => {
+        this.active += 1;
+        resolve(() => this.release());
+      });
+    });
+  }
+
+  private release() {
+    this.active = Math.max(0, this.active - 1);
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
+
+const toolSemaphore = new Semaphore(MAX_CONCURRENT_TOOLS);
 
 function shouldSkipIndexBuild(): boolean {
   return process.env.MEMENTO_SKIP_INDEX_BUILD === "1";
@@ -167,20 +208,28 @@ function parseDistanceMetric(distance: string) {
 }
 
 function wrapTool<TName extends ToolName>(
+  context: RequestContext,
   toolName: TName,
   fn: (input: HandlerInput<TName>) => Promise<HandlerOutput<TName>>
 ) {
   return async (rawInput: unknown) => {
-    const parsed = ToolSchemas[toolName].input.parse(rawInput) as HandlerInput<TName>;
+    const release = await toolSemaphore.acquire();
     try {
-      const output = await fn(parsed);
-      ToolSchemas[toolName].output.parse(output);
-      return { content: [], structuredContent: output };
-    } catch (err) {
-      if (err instanceof McpError) {
-        throw err;
-      }
-      throw toMcpError(err);
+      return await runWithContext(context, async () => {
+        const parsed = ToolSchemas[toolName].input.parse(rawInput) as HandlerInput<TName>;
+        try {
+          const output = await fn(parsed);
+          ToolSchemas[toolName].output.parse(output);
+          return { content: [], structuredContent: output };
+        } catch (err) {
+          if (err instanceof McpError) {
+            throw err;
+          }
+          throw toMcpError(err);
+        }
+      });
+    } finally {
+      release();
     }
   };
 }
@@ -189,7 +238,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
   const { pool, context } = deps;
 
   const stub = (toolName: ToolName) =>
-    wrapTool(toolName, async () => {
+    wrapTool(context, toolName, async () => {
       throw notImplementedError(toolName);
     });
 
@@ -216,8 +265,291 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
     throw new ValidationError("item_id or canonical_key is required");
   };
 
+  const DEFAULT_MAX_CANONICAL_FILE_BYTES = 5_000_000;
+  const maxCanonicalFileBytes = (() => {
+    const raw = Number.parseInt(process.env.MEMENTO_MAX_CANONICAL_FILE_BYTES ?? "", 10);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return DEFAULT_MAX_CANONICAL_FILE_BYTES;
+  })();
+
+  const canonicalRoots = (process.env.MEMENTO_CANONICAL_ROOTS ?? process.cwd())
+    .split(",")
+    .map((root) => root.trim())
+    .filter(Boolean)
+    .map((root) => path.resolve(root));
+
+  const isPathAllowed = (fileRealPath: string): boolean => {
+    if (canonicalRoots.length === 0) return true;
+    return canonicalRoots.some((root) => {
+      if (fileRealPath === root) return true;
+      const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+      return fileRealPath.startsWith(prefix);
+    });
+  };
+
+  const readCanonicalFile = async (filePath: string): Promise<string> => {
+    const resolvedPath = path.resolve(filePath);
+    let stats;
+    try {
+      stats = await fs.stat(resolvedPath);
+    } catch (err) {
+      throw new ValidationError("Canonical file not found", { path: filePath });
+    }
+
+    if (!stats.isFile()) {
+      throw new ValidationError("Canonical path is not a file", { path: filePath });
+    }
+
+    const fileRealPath = await fs.realpath(resolvedPath);
+    if (!isPathAllowed(fileRealPath)) {
+      throw new ValidationError("Canonical path is outside allowed roots", {
+        path: filePath,
+        allowed_roots: canonicalRoots,
+      });
+    }
+
+    if (stats.size > maxCanonicalFileBytes) {
+      throw new ValidationError("Canonical file too large", {
+        path: filePath,
+        max_bytes: maxCanonicalFileBytes,
+        size: stats.size,
+      });
+    }
+
+    const text = await fs.readFile(fileRealPath, "utf8");
+    if (text.length === 0) {
+      throw new ValidationError("Canonical file is empty", { path: filePath });
+    }
+    return text;
+  };
+
+  const handleCanonicalUpsert = async (
+    toolName: string,
+    input: {
+      project_id?: string;
+      idempotency_key: string;
+      canonical_key: string;
+      doc_class: string;
+      title: string;
+      tags?: string[] | null;
+      metadata?: Record<string, unknown>;
+      pinned?: boolean;
+      links?: Array<{
+        to: { item_id?: string; canonical_key?: string };
+        relation: string;
+        weight: number;
+        metadata: Record<string, unknown>;
+      }>;
+    },
+    content: { format: string; text: string; json?: Record<string, unknown> | null }
+  ) => {
+    const projectId = resolveProjectId(context, input.project_id);
+    const commitKey = scopedIdempotencyKey(toolName, input.idempotency_key);
+
+    const inferKind = (docClass: string) => {
+      switch (docClass) {
+        case "app_spec":
+        case "feature_spec":
+        case "onboarding_guide":
+        case "glossary":
+          return "spec";
+        case "design_doc":
+        case "architecture_doc":
+        case "security_review":
+        case "performance_notes":
+          return "architecture";
+        case "implementation_plan":
+        case "migration_plan":
+        case "test_plan":
+        case "rollout_plan":
+          return "plan";
+        case "adr":
+          return "decision";
+        case "code_map":
+        case "environment_registry":
+        case "environment_fact":
+          return "environment_fact";
+        case "operations_overview":
+        case "runbook":
+          return "runbook";
+        case "troubleshooting":
+        case "postmortem":
+          return "troubleshooting";
+        case "meeting_notes":
+        case "research_spike":
+        case "release_notes":
+        case "other":
+          return "note";
+        default:
+          return "note";
+      }
+    };
+
+    return withTransaction(pool, async (client) => {
+      const commit = await insertOrGetCommit(client, {
+        project_id: projectId,
+        session_id: null,
+        idempotency_key: commitKey,
+        author: null,
+        summary: toolName,
+      });
+
+      if (commit.deduped) {
+        const existing = await client.query(
+          `SELECT mv.id AS version_id, mv.version_num, mi.id AS item_id
+           FROM memory_versions mv
+           JOIN memory_items mi ON mi.id = mv.item_id
+           WHERE mv.commit_id = $1 AND mi.canonical_key = $2
+           ORDER BY mv.created_at DESC
+           LIMIT 1`,
+          [commit.commit_id, input.canonical_key]
+        );
+
+        if (existing.rows[0]) {
+          return {
+            item_id: existing.rows[0].item_id,
+            version_id: existing.rows[0].version_id,
+            version_num: existing.rows[0].version_num,
+            canonical_key: input.canonical_key,
+          };
+        }
+
+        const item = await getMemoryItemByCanonicalKey(client, projectId, input.canonical_key);
+        if (!item) {
+          throw new NotFoundError("Canonical item not found", {
+            canonical_key: input.canonical_key,
+          });
+        }
+        const version = await getLatestMemoryVersion(pool, projectId, item.id);
+        if (!version) {
+          throw new NotFoundError("Canonical version not found", { item_id: item.id });
+        }
+
+        return {
+          item_id: item.id,
+          version_id: version.id,
+          version_num: version.version_num,
+          canonical_key: input.canonical_key,
+        };
+      }
+
+      const { item } = await upsertCanonicalDoc(client, {
+        project_id: projectId,
+        canonical_key: input.canonical_key,
+        doc_class: input.doc_class,
+        title: input.title,
+        kind: inferKind(input.doc_class),
+        scope: "project",
+        pinned: input.pinned ?? true,
+        status: "active",
+        tags: input.tags ?? null,
+        metadata: input.metadata ?? {},
+      });
+
+      const checksum = crypto.createHash("sha256").update(content.text).digest("hex");
+
+      const version = await createMemoryVersion(client, {
+        project_id: projectId,
+        item_id: item.id,
+        commit_id: commit.commit_id,
+        content_format: content.format,
+        content_text: content.text,
+        content_json: content.json ?? null,
+        checksum,
+      });
+
+      await enqueueOutboxEvent(client, {
+        project_id: projectId,
+        event_type: "INGEST_VERSION",
+        payload: { version_id: version.id },
+      });
+
+      await enqueueOutboxEvent(client, {
+        project_id: projectId,
+        event_type: "EMBED_VERSION",
+        payload: { version_id: version.id },
+      });
+
+      if (input.links?.length) {
+        const canonicalKeys = Array.from(
+          new Set(
+            input.links
+              .map((link) => link.to.canonical_key)
+              .filter((value): value is string => typeof value === "string")
+          )
+        );
+        const explicitIds = Array.from(
+          new Set(
+            input.links
+              .map((link) => link.to.item_id)
+              .filter((value): value is string => typeof value === "string")
+          )
+        );
+
+        const canonicalMap = new Map<string, string>();
+        if (canonicalKeys.length > 0) {
+          const result = await client.query(
+            `SELECT id, canonical_key
+             FROM memory_items
+             WHERE project_id = $1
+               AND canonical_key = ANY($2)`,
+            [projectId, canonicalKeys]
+          );
+          for (const row of result.rows) {
+            canonicalMap.set(row.canonical_key, row.id);
+          }
+          const missing = canonicalKeys.filter((key) => !canonicalMap.has(key));
+          if (missing.length > 0) {
+            throw new NotFoundError("Linked canonical items not found", {
+              canonical_keys: missing,
+            });
+          }
+        }
+
+        if (explicitIds.length > 0) {
+          const result = await client.query(
+            `SELECT id
+             FROM memory_items
+             WHERE project_id = $1
+               AND id = ANY($2)`,
+            [projectId, explicitIds]
+          );
+          const found = new Set(result.rows.map((row) => row.id));
+          const missing = explicitIds.filter((id) => !found.has(id));
+          if (missing.length > 0) {
+            throw new NotFoundError("Linked items not found", { item_ids: missing });
+          }
+        }
+
+        for (const link of input.links) {
+          const toItemId =
+            link.to.item_id ??
+            (link.to.canonical_key ? canonicalMap.get(link.to.canonical_key) : undefined);
+          if (!toItemId) {
+            throw new ValidationError("item_id or canonical_key is required for link targets");
+          }
+          await createMemoryLink(client, {
+            project_id: projectId,
+            from_item_id: item.id,
+            to_item_id: toItemId,
+            relation: link.relation,
+            weight: link.weight,
+            metadata: link.metadata,
+          });
+        }
+      }
+
+      return {
+        item_id: item.id,
+        version_id: version.id,
+        version_num: version.version_num,
+        canonical_key: input.canonical_key,
+      };
+    });
+  };
+
   return {
-    projectsResolve: wrapTool("projects.resolve", async (input) => {
+    projectsResolve: wrapTool(context, "projects.resolve", async (input) => {
       const workspace = input.workspace_id
         ? await requireWorkspaceById(pool, input.workspace_id)
         : await getOrCreateWorkspace(pool, input.workspace_name ?? "default");
@@ -241,9 +573,39 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         repo_url: project.repo_url,
       };
     }),
-    projectsList: stub("projects.list"),
+    projectsList: wrapTool(context, "projects.list", async (input) => {
+      let workspaceId: string | undefined;
+      if (input.workspace_id) {
+        await requireWorkspaceById(pool, input.workspace_id);
+        workspaceId = input.workspace_id;
+      } else if (input.workspace_name) {
+        const workspace = await requireWorkspaceByName(pool, input.workspace_name);
+        workspaceId = workspace.id;
+      }
 
-    sessionsStart: wrapTool("sessions.start", async (input) => {
+      const projects = await listProjects(pool, {
+        workspace_id: workspaceId,
+        include_archived: input.include_archived,
+        limit: input.limit,
+        offset: input.offset,
+      });
+
+      const nextOffset = projects.length === input.limit ? input.offset + projects.length : undefined;
+
+      return {
+        workspace_id: workspaceId,
+        projects: projects.map((project) => ({
+          project_id: project.id,
+          project_key: project.project_key,
+          display_name: project.display_name,
+          repo_url: project.repo_url,
+          created_at: toIsoString(project.created_at),
+        })),
+        next_offset: nextOffset,
+      };
+    }),
+
+    sessionsStart: wrapTool(context, "sessions.start", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const session = await startSession(pool, {
         project_id: projectId,
@@ -253,7 +615,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
 
       return { session_id: session.id, started_at: toIsoString(session.started_at) };
     }),
-    sessionsEnd: wrapTool("sessions.end", async (input) => {
+    sessionsEnd: wrapTool(context, "sessions.end", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
 
       if (!input.create_snapshot) {
@@ -367,7 +729,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       });
     }),
 
-    embeddingProfilesList: wrapTool("embedding_profiles.list", async (input) => {
+    embeddingProfilesList: wrapTool(context, "embedding_profiles.list", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const profiles = await listEmbeddingProfiles(pool, projectId, input.include_inactive);
 
@@ -384,7 +746,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         })),
       };
     }),
-    embeddingProfilesUpsert: wrapTool("embedding_profiles.upsert", async (input) => {
+    embeddingProfilesUpsert: wrapTool(context, "embedding_profiles.upsert", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("embedding_profiles.upsert", input.idempotency_key);
 
@@ -455,7 +817,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         index_created: indexResult.created,
       };
     }),
-    embeddingProfilesActivate: wrapTool("embedding_profiles.activate", async (input) => {
+    embeddingProfilesActivate: wrapTool(context, "embedding_profiles.activate", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("embedding_profiles.activate", input.idempotency_key);
 
@@ -502,7 +864,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       };
     }),
 
-    memoryCommit: wrapTool("memory.commit", async (input) => {
+    memoryCommit: wrapTool(context, "memory.commit", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("memory.commit", input.idempotency_key);
 
@@ -610,7 +972,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { commit_id: commit.commit_id, deduped: false, results };
       });
     }),
-    memoryGet: wrapTool("memory.get", async (input) => {
+    memoryGet: wrapTool(context, "memory.get", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
 
       const item =
@@ -671,7 +1033,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         truncated: version ? truncated : undefined,
       };
     }),
-    memorySearch: wrapTool("memory.search", async (input) => {
+    memorySearch: wrapTool(context, "memory.search", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
 
       const result = await hybridSearch(pool, {
@@ -701,7 +1063,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         debug: input.debug ? result.debug : undefined,
       };
     }),
-    memoryRestore: wrapTool("memory.restore", async (input) => {
+    memoryRestore: wrapTool(context, "memory.restore", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const items: HandlerOutput<"memory.restore">["items"] = [];
       const seen = new Set<string>();
@@ -869,7 +1231,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
 
       return output;
     }),
-    memoryHistory: wrapTool("memory.history", async (input) => {
+    memoryHistory: wrapTool(context, "memory.history", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
 
       const itemId = input.item_id
@@ -905,8 +1267,47 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         next_offset: nextOffset,
       };
     }),
-    memoryDiff: stub("memory.diff"),
-    memoryPin: wrapTool("memory.pin", async (input) => {
+    memoryDiff: wrapTool(context, "memory.diff", async (input) => {
+      const projectId = resolveProjectId(context, input.project_id);
+      const itemId = await resolveItemId(projectId, {
+        item_id: input.item_id,
+        canonical_key: input.canonical_key,
+      });
+
+      const fromVersion = await getMemoryVersion(pool, projectId, itemId, input.from_version_num);
+      if (!fromVersion) {
+        throw new NotFoundError("Memory version not found", {
+          item_id: itemId,
+          version_num: input.from_version_num,
+        });
+      }
+
+      const toVersion = await getMemoryVersion(pool, projectId, itemId, input.to_version_num);
+      if (!toVersion) {
+        throw new NotFoundError("Memory version not found", {
+          item_id: itemId,
+          version_num: input.to_version_num,
+        });
+      }
+
+      const unifiedDiff = createTwoFilesPatch(
+        `v${fromVersion.version_num}`,
+        `v${toVersion.version_num}`,
+        fromVersion.content_text,
+        toVersion.content_text,
+        "",
+        "",
+        { context: input.context_lines }
+      );
+
+      return {
+        item_id: itemId,
+        from_version_num: fromVersion.version_num,
+        to_version_num: toVersion.version_num,
+        unified_diff: unifiedDiff,
+      };
+    }),
+    memoryPin: wrapTool(context, "memory.pin", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const itemId = await resolveItemId(projectId, {
         item_id: input.item_id,
@@ -935,7 +1336,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { item_id: item.id, pinned: item.pinned };
       });
     }),
-    memoryUnpin: wrapTool("memory.unpin", async (input) => {
+    memoryUnpin: wrapTool(context, "memory.unpin", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const itemId = await resolveItemId(projectId, {
         item_id: input.item_id,
@@ -964,7 +1365,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { item_id: item.id, pinned: item.pinned };
       });
     }),
-    memoryLink: wrapTool("memory.link", async (input) => {
+    memoryLink: wrapTool(context, "memory.link", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("memory.link", input.idempotency_key);
 
@@ -998,7 +1399,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { link_id: link.id };
       });
     }),
-    memoryArchive: wrapTool("memory.archive", async (input) => {
+    memoryArchive: wrapTool(context, "memory.archive", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const itemId = await resolveItemId(projectId, {
         item_id: input.item_id,
@@ -1027,160 +1428,40 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       });
     }),
 
-    canonicalUpsert: wrapTool("canonical.upsert", async (input) => {
-      const projectId = resolveProjectId(context, input.project_id);
-      const commitKey = scopedIdempotencyKey("canonical.upsert", input.idempotency_key);
-
-      const inferKind = (docClass: string) => {
-        switch (docClass) {
-          case "app_spec":
-          case "feature_spec":
-          case "onboarding_guide":
-          case "glossary":
-            return "spec";
-          case "design_doc":
-          case "architecture_doc":
-          case "security_review":
-          case "performance_notes":
-            return "architecture";
-          case "implementation_plan":
-          case "migration_plan":
-          case "test_plan":
-          case "rollout_plan":
-            return "plan";
-          case "adr":
-            return "decision";
-          case "code_map":
-          case "environment_registry":
-          case "environment_fact":
-            return "environment_fact";
-          case "operations_overview":
-          case "runbook":
-            return "runbook";
-          case "troubleshooting":
-          case "postmortem":
-            return "troubleshooting";
-          case "meeting_notes":
-          case "research_spike":
-          case "release_notes":
-          case "other":
-            return "note";
-          default:
-            return "note";
+    canonicalUpsert: wrapTool(context, "canonical.upsert", async (input) => {
+      return handleCanonicalUpsert(
+        "canonical.upsert",
+        input,
+        {
+          format: input.content.format,
+          text: input.content.text,
+          json: input.content.json ?? null,
         }
-      };
-
-      return withTransaction(pool, async (client) => {
-        const commit = await insertOrGetCommit(client, {
-          project_id: projectId,
-          session_id: null,
-          idempotency_key: commitKey,
-          author: null,
-          summary: "canonical.upsert",
-        });
-
-        if (commit.deduped) {
-          const existing = await client.query(
-            `SELECT mv.id AS version_id, mv.version_num, mi.id AS item_id
-             FROM memory_versions mv
-             JOIN memory_items mi ON mi.id = mv.item_id
-             WHERE mv.commit_id = $1 AND mi.canonical_key = $2
-             ORDER BY mv.created_at DESC
-             LIMIT 1`,
-            [commit.commit_id, input.canonical_key]
-          );
-
-          if (existing.rows[0]) {
-            return {
-              item_id: existing.rows[0].item_id,
-              version_id: existing.rows[0].version_id,
-              version_num: existing.rows[0].version_num,
-              canonical_key: input.canonical_key,
-            };
-          }
-
-          const item = await getMemoryItemByCanonicalKey(client, projectId, input.canonical_key);
-          if (!item) {
-            throw new NotFoundError("Canonical item not found", {
-              canonical_key: input.canonical_key,
-            });
-          }
-          const version = await getLatestMemoryVersion(pool, projectId, item.id);
-          if (!version) {
-            throw new NotFoundError("Canonical version not found", { item_id: item.id });
-          }
-
-          return {
-            item_id: item.id,
-            version_id: version.id,
-            version_num: version.version_num,
-            canonical_key: input.canonical_key,
-          };
-        }
-
-        const { item } = await upsertCanonicalDoc(client, {
-          project_id: projectId,
-          canonical_key: input.canonical_key,
-          doc_class: input.doc_class,
-          title: input.title,
-          kind: inferKind(input.doc_class),
-          scope: "project",
-          pinned: input.pinned,
-          status: "active",
-          tags: input.tags ?? null,
-          metadata: input.metadata ?? {},
-        });
-
-        const checksum = crypto
-          .createHash("sha256")
-          .update(input.content.text)
-          .digest("hex");
-
-        const version = await createMemoryVersion(client, {
-          project_id: projectId,
-          item_id: item.id,
-          commit_id: commit.commit_id,
-          content_format: input.content.format,
-          content_text: input.content.text,
-          content_json: input.content.json ?? null,
-          checksum,
-        });
-
-        await enqueueOutboxEvent(client, {
-          project_id: projectId,
-          event_type: "INGEST_VERSION",
-          payload: { version_id: version.id },
-        });
-
-        await enqueueOutboxEvent(client, {
-          project_id: projectId,
-          event_type: "EMBED_VERSION",
-          payload: { version_id: version.id },
-        });
-
-        if (input.links?.length) {
-          for (const link of input.links) {
-            const toItemId = await resolveItemId(projectId, link.to);
-            await createMemoryLink(client, {
-              project_id: projectId,
-              from_item_id: item.id,
-              to_item_id: toItemId,
-              relation: link.relation,
-              weight: link.weight,
-              metadata: link.metadata,
-            });
-          }
-        }
-
-        return {
-          item_id: item.id,
-          version_id: version.id,
-          version_num: version.version_num,
-          canonical_key: input.canonical_key,
-        };
-      });
+      );
     }),
-    canonicalGet: wrapTool("canonical.get", async (input) => {
+    canonicalUpsertFile: wrapTool(context, "canonical.upsert_file", async (input) => {
+      const text = await readCanonicalFile(input.path);
+      const format = input.format;
+      let contentJson: Record<string, unknown> | null = null;
+      if (format === "json") {
+        try {
+          contentJson = JSON.parse(text) as Record<string, unknown>;
+        } catch (err) {
+          throw new ValidationError("Canonical file contains invalid JSON", { path: input.path });
+        }
+      }
+
+      return handleCanonicalUpsert(
+        "canonical.upsert_file",
+        input,
+        {
+          format,
+          text,
+          json: contentJson,
+        }
+      );
+    }),
+    canonicalGet: wrapTool(context, "canonical.get", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const item = await getMemoryItemByCanonicalKey(pool, projectId, input.canonical_key);
       if (!item) {
@@ -1233,7 +1514,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         truncated: version ? truncated : undefined,
       };
     }),
-    canonicalOutline: wrapTool("canonical.outline", async (input) => {
+    canonicalOutline: wrapTool(context, "canonical.outline", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const item = await getMemoryItemByCanonicalKey(pool, projectId, input.canonical_key);
       if (!item) {
@@ -1252,8 +1533,9 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         `SELECT section_anchor, heading_path, start_char, end_char
          FROM memory_chunks
          WHERE version_id = $1
+           AND project_id = $2
          ORDER BY chunk_index ASC`,
-        [version.id]
+        [version.id, projectId]
       );
 
       const sections = buildOutlineFromChunks(chunks.rows).map((section) => ({
@@ -1270,7 +1552,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         sections,
       };
     }),
-    canonicalGetSection: wrapTool("canonical.get_section", async (input) => {
+    canonicalGetSection: wrapTool(context, "canonical.get_section", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const item = await getMemoryItemByCanonicalKey(pool, projectId, input.canonical_key);
       if (!item) {
@@ -1346,7 +1628,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         truncated,
       };
     }),
-    canonicalContextPack: wrapTool("canonical.context_pack", async (input) => {
+    canonicalContextPack: wrapTool(context, "canonical.context_pack", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
 
       const item = await getMemoryItemByCanonicalKey(pool, projectId, input.canonical_key);
@@ -1410,7 +1692,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
       };
     }),
 
-    adminReindexProfile: wrapTool("admin.reindex_profile", async (input) => {
+    adminReindexProfile: wrapTool(context, "admin.reindex_profile", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("admin.reindex_profile", input.idempotency_key);
 
@@ -1478,7 +1760,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         enqueued,
       };
     }),
-    adminReingestVersion: wrapTool("admin.reingest_version", async (input) => {
+    adminReingestVersion: wrapTool(context, "admin.reingest_version", async (input) => {
       const projectId = resolveProjectId(context, input.project_id);
       const commitKey = scopedIdempotencyKey("admin.reingest_version", input.idempotency_key);
 
@@ -1523,7 +1805,7 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         return { version_id: input.version_id, enqueued: true };
       });
     }),
-    healthCheck: wrapTool("health.check", async () => {
+    healthCheck: wrapTool(context, "health.check", async () => {
       const health = await checkDbHealth(pool);
       const backlog = await pool.query(
         "SELECT COUNT(*)::int AS count FROM outbox_events WHERE processed_at IS NULL"

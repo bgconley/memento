@@ -1,5 +1,5 @@
 import { ToolSchemas } from "@memento/shared";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp"; // adjust import to your SDK version
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"; // adjust import to your SDK version
 import type { ToolHandlers } from "./toolHandlers";
 
 // Toolcards for MCP tools/list.
@@ -92,6 +92,11 @@ Provide from/to using item_id OR canonical_key; choose relation (depends_on/impl
     `Create/update an authoritative canonical doc addressed by canonical_key (pinned by default). Requires idempotency_key.
 Use doc_class taxonomy (prompt memento/doc-class-taxonomy) and canonical_key conventions. After storing: canonical.outline -> canonical.get_section; memory.link to connect lifecycle artifacts. More: prompt memento/playbook-feature-lifecycle.`,
 
+  "canonical.upsert_file":
+    `Create/update a canonical doc by reading content from a local file path (best for large docs). Requires idempotency_key.
+Inputs: canonical_key, doc_class, title, path, optional format/tags/metadata/pinned. Server reads the file and stores it as content_text.
+Use when content is large to avoid client-side payload overhead. More: prompt memento/playbook-feature-lifecycle.`,
+
   "canonical.get":
     `Fetch a canonical doc by canonical_key (latest or specific version). Use max_chars to avoid large payloads.
 Prefer canonical.outline -> canonical.get_section for precise retrieval. More: prompt memento/operating-manual.`,
@@ -121,6 +126,25 @@ Use if ingestion failed or chunking rules changed. More: prompt memento/operatin
 More: prompt memento/operating-manual.`,
 };
 
+const TOOL_NAME_STYLE = process.env.MEMENTO_TOOL_NAME_STYLE ?? "dot";
+const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+function sanitizeToolName(name: string): string {
+  if (TOOL_NAME_STYLE === "dot") return name;
+  const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return TOOL_NAME_PATTERN.test(sanitized) ? sanitized : sanitized.replace(/_+/g, "_");
+}
+
+function rewriteDescription(raw: string): string {
+  if (TOOL_NAME_STYLE === "dot") return raw;
+  let rewritten = raw;
+  for (const toolName of Object.keys(TOOL_DESCRIPTIONS)) {
+    const safeName = sanitizeToolName(toolName);
+    rewritten = rewritten.replaceAll(toolName, safeName);
+  }
+  return rewritten;
+}
+
 function registerTool(
   server: McpServer,
   name: keyof typeof ToolSchemas,
@@ -134,11 +158,16 @@ function registerTool(
   },
   handler: ToolHandlers[keyof ToolHandlers]
 ) {
+  const toolName = sanitizeToolName(name);
   const toolConfig = {
     ...config,
-    description: TOOL_DESCRIPTIONS[name] ?? "Memento tool",
+    description: rewriteDescription(TOOL_DESCRIPTIONS[name] ?? "Memento tool"),
+    _meta:
+      TOOL_NAME_STYLE === "dot"
+        ? config._meta
+        : { ...(config._meta ?? {}), memento_raw_name: name },
   };
-  server.registerTool(name, toolConfig as any, handler as any);
+  server.registerTool(toolName, toolConfig as any, handler as any);
 }
 
 /**
@@ -231,6 +260,10 @@ export function registerTools(server: McpServer, handlers: ToolHandlers) {
     inputSchema: ToolSchemas["canonical.upsert"].input,
     outputSchema: ToolSchemas["canonical.upsert"].output,
   }, handlers.canonicalUpsert);
+  registerTool(server, "canonical.upsert_file", {
+    inputSchema: ToolSchemas["canonical.upsert_file"].input,
+    outputSchema: ToolSchemas["canonical.upsert_file"].output,
+  }, handlers.canonicalUpsertFile);
   registerTool(server, "canonical.get", {
     inputSchema: ToolSchemas["canonical.get"].input,
     outputSchema: ToolSchemas["canonical.get"].output,

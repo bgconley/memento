@@ -1,5 +1,5 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp";
-import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { Pool } from "pg";
 import { getLatestMemoryVersion, getMemoryItemById, getMemoryVersion } from "@memento/core";
@@ -222,11 +222,15 @@ export function registerResources(server: McpServer, deps: ResourceDeps) {
     async (_uri, variables) => {
       const projectId = assertProjectMatch(context, requireStringVar(variables.project_id, "project_id"));
       const itemId = requireStringVar(variables.item_id, "item_id");
-      const versionNum = Number(requireStringVar(variables.version_num, "version_num"));
-      if (!Number.isFinite(versionNum) || versionNum <= 0) {
-        throw new McpError(ErrorCode.InvalidParams, "version_num must be a positive number");
+      const rawVersion = requireStringVar(variables.version_num, "version_num");
+      const versionNum = Number(rawVersion);
+      if (!Number.isInteger(versionNum) || versionNum <= 0) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "version_num must be a positive integer"
+        );
       }
-      return readItemVersion(pool, projectId, itemId, Math.floor(versionNum));
+      return readItemVersion(pool, projectId, itemId, versionNum);
     }
   );
 

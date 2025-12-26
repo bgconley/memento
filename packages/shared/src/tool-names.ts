@@ -24,6 +24,7 @@ export const ToolNames = {
   memoryArchive: "memory.archive",
 
   canonicalUpsert: "canonical.upsert",
+  canonicalUpsertFile: "canonical.upsert_file",
   canonicalGet: "canonical.get",
   canonicalOutline: "canonical.outline",
   canonicalGetSection: "canonical.get_section",

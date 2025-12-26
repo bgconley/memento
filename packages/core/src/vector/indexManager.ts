@@ -23,6 +23,11 @@ function shortHash(input: string, length = 10): string {
   return crypto.createHash("sha1").update(input).digest("hex").slice(0, length);
 }
 
+function quoteIdent(identifier: string): string {
+  const escaped = identifier.replace(/\"/g, '\"\"');
+  return `"${escaped}"`;
+}
+
 export function buildProfileIndexName(profileId: string): string {
   const suffix = shortHash(profileId);
   return `chunk_embeddings_hnsw_${suffix}`;
@@ -66,13 +71,17 @@ export async function ensureProfileIndex(
       return { indexName, created: false, concurrently };
     }
 
-    const dropSql = `DROP INDEX ${concurrently ? "CONCURRENTLY " : ""}IF EXISTS ${indexName}`;
+    const dropSql = `DROP INDEX ${concurrently ? "CONCURRENTLY " : ""}IF EXISTS ${quoteIdent(
+      indexName
+    )}`;
     await pool.query(dropSql);
   }
 
   const escapedProfileId = `'${profileId.replace(/'/g, "''")}'`;
   const withClause = hnsw ? ` WITH (${formatHnswParams(hnsw)})` : "";
-  const createSql = `CREATE INDEX ${concurrently ? "CONCURRENTLY " : ""}IF NOT EXISTS ${indexName}
+  const createSql = `CREATE INDEX ${concurrently ? "CONCURRENTLY " : ""}IF NOT EXISTS ${quoteIdent(
+    indexName
+  )}
     ON chunk_embeddings USING hnsw ((embedding::vector(${dims})) ${opClass})${withClause}
     WHERE embedding_profile_id = ${escapedProfileId}`;
 
