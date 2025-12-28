@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { createTwoFilesPatch } from "diff";
 import type { Pool } from "pg";
 import {
@@ -52,6 +54,8 @@ import {
 import { resolveProjectId, runWithContext, setActiveProject } from "./context";
 import type { RequestContext } from "./context";
 
+const execFileAsync = promisify(execFile);
+
 const NOT_IMPLEMENTED_CODE = "not_implemented";
 const MAX_CONCURRENT_TOOLS = (() => {
   const raw = Number.parseInt(process.env.MEMENTO_MAX_CONCURRENT_TOOLS ?? "", 10);
@@ -85,6 +89,30 @@ class Semaphore {
     this.active = Math.max(0, this.active - 1);
     const next = this.queue.shift();
     if (next) next();
+  }
+}
+
+const DEFAULT_GIT_REMOTE = process.env.MEMENTO_GIT_REMOTE_NAME ?? "origin";
+
+async function inferRepoUrlFromCwd(cwd?: string | null): Promise<string | null> {
+  if (!cwd) return null;
+  if (process.env.MEMENTO_PROJECT_RESOLVE_FROM_GIT === "false") return null;
+  const resolved = path.resolve(cwd);
+  try {
+    await fs.stat(resolved);
+  } catch {
+    return null;
+  }
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", resolved, "remote", "get-url", DEFAULT_GIT_REMOTE],
+      { timeout: 1500, maxBuffer: 1024 * 1024 }
+    );
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
   }
 }
 
@@ -554,9 +582,12 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         ? await requireWorkspaceById(pool, input.workspace_id)
         : await getOrCreateWorkspace(pool, input.workspace_name ?? "default");
 
+      const inferredRepoUrl =
+        input.repo_url ?? (await inferRepoUrlFromCwd(input.cwd ?? null));
+
       const project = await resolveProject(pool, {
         workspace_id: workspace.id,
-        repo_url: input.repo_url ?? null,
+        repo_url: inferredRepoUrl ?? null,
         cwd: input.cwd ?? null,
         project_key: input.project_key ?? null,
         display_name: input.display_name ?? null,

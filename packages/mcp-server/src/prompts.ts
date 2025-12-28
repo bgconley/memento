@@ -19,6 +19,7 @@ const PROMPTS: PromptDefinition[] = [
       "- projects.resolve (sets active project for this connection)",
       "- For restores, prefer repo_url or project_key (stable across machines); avoid cwd-only",
       "- Use create_if_missing=false when you expect the project to exist",
+      "- If you pass cwd and repo_url is missing, the server will try to infer repo_url from git origin",
       "- sessions.start when beginning a focused work session",
       "",
       "2) Choose the right write tool:",
