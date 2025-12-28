@@ -38,6 +38,7 @@ const PROMPTS: PromptDefinition[] = [
       "5) Retrieval best practices:",
       "- canonical.outline + canonical.get_section for targeted excerpts",
       "- memory.search for cross-cutting queries",
+      "- memory.list to inventory items (snapshots, decisions, plans) without relying on search",
       "- memory.restore for session kickoff bundles",
       "",
       "6) Idempotency for writes:",

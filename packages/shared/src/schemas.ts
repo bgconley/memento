@@ -445,6 +445,31 @@ export const MemorySearchFiltersZ = z.object({
   created_after: z.string().datetime({ offset: true }).optional(),
 });
 
+export const MemoryListInputZ = ProjectRefZ.extend({
+  filters: MemorySearchFiltersZ.default({}),
+  include_archived: z.boolean().default(false),
+  limit: z.number().int().min(1).max(200).default(50),
+  offset: z.number().int().min(0).default(0),
+});
+
+export const MemoryListOutputZ = z.object({
+  items: z.array(z.object({
+    item_id: UuidZ,
+    title: z.string(),
+    kind: MemoryKindZ,
+    scope: MemoryScopeZ,
+    canonical_key: z.string().nullable(),
+    doc_class: z.string().nullable(),
+    pinned: z.boolean(),
+    status: z.string(),
+    tags: z.array(z.string()),
+    created_at: z.string(),
+    updated_at: z.string(),
+    resource_uri: z.string(),
+  })),
+  next_offset: z.number().int().min(0).optional(),
+});
+
 export const MemorySearchInputZ = ProjectRefZ.extend({
   query: z.string().min(1).max(2000),
   filters: MemorySearchFiltersZ.default({}),
@@ -689,6 +714,7 @@ export const ToolSchemas = {
 
   "memory.commit": { input: MemoryCommitInputZ, output: MemoryCommitOutputZ },
   "memory.get": { input: MemoryGetInputZ, output: MemoryGetOutputZ },
+  "memory.list": { input: MemoryListInputZ, output: MemoryListOutputZ },
   "memory.search": { input: MemorySearchInputZ, output: MemorySearchOutputZ },
   "memory.restore": { input: MemoryRestoreInputZ, output: MemoryRestoreOutputZ },
   "memory.history": { input: MemoryHistoryInputZ, output: MemoryHistoryOutputZ },

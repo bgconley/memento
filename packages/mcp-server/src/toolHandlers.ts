@@ -27,6 +27,7 @@ export type ToolHandlers = {
 
   memoryCommit: HandlerFor<"memory.commit">;
   memoryGet: HandlerFor<"memory.get">;
+  memoryList: HandlerFor<"memory.list">;
   memorySearch: HandlerFor<"memory.search">;
   memoryRestore: HandlerFor<"memory.restore">;
   memoryHistory: HandlerFor<"memory.history">;

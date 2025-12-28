@@ -14,6 +14,7 @@ export const ToolNames = {
 
   memoryCommit: "memory.commit",
   memoryGet: "memory.get",
+  memoryList: "memory.list",
   memorySearch: "memory.search",
   memoryRestore: "memory.restore",
   memoryHistory: "memory.history",

@@ -25,6 +25,7 @@ import {
   ensureProfileIndex,
   endSession,
   enqueueOutboxEvent,
+  appendItemFilters,
   getLatestMemoryVersion,
   getMemoryItemByCanonicalKey,
   getMemoryItemById,
@@ -1657,6 +1658,52 @@ export function createHandlers(deps: HandlerDependencies): ToolHandlers {
         heading_path: headingPath,
         text,
         truncated,
+      };
+    }),
+    memoryList: wrapTool(context, "memory.list", async (input) => {
+      const projectId = resolveProjectId(context, input.project_id);
+      const values: Array<string | number | string[] | boolean> = [projectId];
+      const where: string[] = ["mi.project_id = $1"];
+
+      if (!input.include_archived) {
+        where.push("mi.status = 'active'");
+      }
+
+      where.push(...appendItemFilters(input.filters, values, "mi"));
+
+      values.push(input.limit);
+      const limitIndex = values.length;
+      values.push(input.offset);
+      const offsetIndex = values.length;
+
+      const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const listQuery = `SELECT id, title, kind, scope, canonical_key, doc_class, pinned, status, tags, created_at, updated_at
+         FROM memory_items mi
+         ${whereClause}
+         ORDER BY updated_at DESC, id ASC
+         LIMIT $${limitIndex} OFFSET $${offsetIndex}`;
+
+      const result = await pool.query(listQuery, values);
+
+      const nextOffset =
+        result.rows.length === input.limit ? input.offset + result.rows.length : undefined;
+
+      return {
+        items: result.rows.map((row) => ({
+          item_id: row.id,
+          title: row.title,
+          kind: parseMemoryKind(row.kind),
+          scope: parseMemoryScope(row.scope),
+          canonical_key: row.canonical_key,
+          doc_class: normalizeDocClass(row.doc_class),
+          pinned: row.pinned,
+          status: row.status,
+          tags: row.tags,
+          created_at: toIsoString(row.created_at),
+          updated_at: toIsoString(row.updated_at),
+          resource_uri: buildItemUri(projectId, row.id),
+        })),
+        next_offset: nextOffset,
       };
     }),
     canonicalContextPack: wrapTool(context, "canonical.context_pack", async (input) => {

@@ -55,8 +55,13 @@ Set kind + doc_class using the taxonomy (prompt memento/doc-class-taxonomy). Pre
     `Fetch an item by item_id OR canonical_key (provide exactly one). Optional version_num; use max_chars to limit size.
 Use after memory.search or when you know the identifier. More: prompt memento/operating-manual.`,
 
+  "memory.list":
+    `List memory items by filters (kinds/scopes/tags/pinned/canonical/doc_classes). Use for discovery and when you need snapshots or an inventory.
+This does NOT require chunking or embeddings. For full-text retrieval use memory.get or canonical.get. More: prompt memento/operating-manual.`,
+
   "memory.search":
     `Hybrid search across project memory ("what do we know about X?"). Use filters to increase precision (kinds/scopes/tags/pinned_only/canonical_only/doc_classes).
+Not a list endpoint; for inventories or snapshots use memory.list.
 Next: memory.get or (if canonical) canonical.outline -> canonical.get_section. More: prompt memento/operating-manual.`,
 
   "memory.restore":
@@ -222,6 +227,10 @@ export function registerTools(server: McpServer, handlers: ToolHandlers) {
     inputSchema: ToolSchemas["memory.get"].input,
     outputSchema: ToolSchemas["memory.get"].output,
   }, handlers.memoryGet);
+  registerTool(server, "memory.list", {
+    inputSchema: ToolSchemas["memory.list"].input,
+    outputSchema: ToolSchemas["memory.list"].output,
+  }, handlers.memoryList);
   registerTool(server, "memory.search", {
     inputSchema: ToolSchemas["memory.search"].input,
     outputSchema: ToolSchemas["memory.search"].output,
