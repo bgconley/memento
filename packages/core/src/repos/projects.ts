@@ -88,7 +88,15 @@ export async function resolveProject(
   if (existing) return existing;
 
   if (!input.create_if_missing) {
-    throw new NotFoundError("Project not found", { project_key: projectKey });
+    throw new NotFoundError(
+      "Project not found. For restores, prefer repo_url or project_key; cwd hashes can differ across machines/paths.",
+      {
+        project_key: projectKey,
+        workspace_id: input.workspace_id,
+        repo_url: input.repo_url ?? null,
+        cwd: input.cwd ?? null,
+      }
+    );
   }
 
   const displayName = inferDisplayName(input, projectKey);

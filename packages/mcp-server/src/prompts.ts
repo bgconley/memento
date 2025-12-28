@@ -17,6 +17,8 @@ const PROMPTS: PromptDefinition[] = [
       "",
       "1) Resolve project context first:",
       "- projects.resolve (sets active project for this connection)",
+      "- For restores, prefer repo_url or project_key (stable across machines); avoid cwd-only",
+      "- Use create_if_missing=false when you expect the project to exist",
       "- sessions.start when beginning a focused work session",
       "",
       "2) Choose the right write tool:",

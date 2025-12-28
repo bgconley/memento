@@ -13,7 +13,7 @@ import type { ToolHandlers } from "./toolHandlers";
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   "projects.resolve":
     `Establish/set active workspace+project context (call first each session). Use when starting, switching repos, or if any tool says "missing project context".
-Inputs: workspace_name/id, cwd and/or repo_url (preferred), create_if_missing=true, optional display_name.
+Inputs: workspace_name/id, repo_url or project_key preferred for stable restores; cwd is hashed and may differ across machines/paths. Use create_if_missing=true only when creating a new project.
 Output: workspace_id, project_id, project_key.
 Next: sessions.start -> memory.restore. More: prompt memento/operating-manual.`,
 
